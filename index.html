@@ -26,9 +26,11 @@ section{background:var(--card);border:1px solid var(--line);border-radius:10px;p
 label{display:block;font-size:.85rem;color:var(--mute);margin-bottom:4px}
 input,select,textarea{width:100%;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;min-height:48px}
 input:focus,select:focus,textarea:focus,button:focus-visible{outline:3px solid var(--blue);outline-offset:1px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+.grid>div,.row>div{min-width:0}
+input[type=date],input[type=time],input[type=search]{-webkit-appearance:none;appearance:none;min-width:0;max-width:100%;display:block}
 .full{grid-column:1/-1}
-.row{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:end}
+.row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:end}
 .row button{min-height:48px}
 button{font:inherit;font-weight:600;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:10px 14px;cursor:pointer}
 button.now{border-color:var(--blue);color:var(--blue)}
@@ -39,8 +41,13 @@ button.danger{color:var(--red)}
 .calc div{background:var(--bg);border-radius:8px;padding:8px 10px}
 .calc b{display:block;font-size:1.2rem}
 .calc span{font-size:.78rem;color:var(--mute)}
-.actions{display:flex;gap:8px;margin-top:12px}
-.actions button{flex:1}
+.actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.editing{border-color:var(--blue)}
+.crewgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
+.warn{margin-top:12px;border:1px solid var(--red);color:var(--red);border-radius:8px;padding:8px 12px;font-size:.88rem}
+.warn[hidden]{display:none}
+.banner{background:var(--bg);border:1px solid var(--blue);color:var(--blue);border-radius:8px;padding:8px 12px;margin:0 0 12px;font-weight:600;font-size:.9rem}
+.actions button{flex:1;min-width:100px}
 .trip{border-top:1px solid var(--line);padding:12px 0}
 .trip:first-of-type{border-top:0}
 .trip h3{margin:0;font-size:1rem}
@@ -61,7 +68,9 @@ button.danger{color:var(--red)}
 <p class="sub">Record times and odometer readings for each run. Entries are saved on this device.</p>
 
 <section>
-<h2>New run</h2>
+<h2 id="formTitle">New run</h2>
+<p class="banner" id="editBanner" hidden></p>
+<p class="note" id="prefillNote" hidden style="margin:-4px 0 12px"></p>
 <form id="f" onsubmit="return false">
 <div class="grid">
 <div><label for="date">Date</label><input type="date" id="date"></div>
@@ -69,6 +78,10 @@ button.danger{color:var(--red)}
 <div><label for="type">Run type</label>
 <select id="type"><option>Emergency</option><option>Non-emergency</option><option>Interfacility</option><option>Standby</option></select></div>
 <div><label for="unit">Unit</label><input id="unit"></div>
+<div class="full"><label>Crew</label><div class="crewgrid" id="crewBoxes"></div>
+<div class="actions" style="margin-top:8px"><button type="button" id="addCrew" style="min-height:40px">+ Add crew member</button><button type="button" id="delCrew" style="min-height:40px">Remove last</button></div></div>
+<div><label for="priority">Priority</label><select id="priority"><option value="">–</option><option>Priority 1</option><option>Priority 2</option><option>Priority 3</option></select></div>
+<div><label for="outcome">Outcome</label><select id="outcome"><option value="">–</option><option>Transported</option><option>Refused transport</option><option>Treated, no transport</option><option>Cancelled</option><option>No patient found</option><option>Standby complete</option></select></div>
 <div class="full"><label for="from">Pickup location</label><input id="from"></div>
 <div class="full"><label for="to">Destination</label><input id="to"></div>
 </div>
@@ -76,6 +89,7 @@ button.danger{color:var(--red)}
 <h2 style="margin-top:20px">Times and odometer</h2>
 <div id="stops"></div>
 
+<div class="warn" id="warn" hidden></div>
 <div class="calc" id="calc"></div>
 
 <div class="full" style="margin-top:12px"><label for="notes">Notes (no patient names or identifiers)</label><textarea id="notes" rows="2"></textarea></div>
@@ -86,9 +100,16 @@ button.danger{color:var(--red)}
 
 <section>
 <h2>Saved runs</h2>
+<div class="grid" style="margin-bottom:12px">
+<div class="full"><label for="q">Search</label><input type="search" id="q" placeholder="Run, unit, crew, location, outcome, notes"></div>
+<div><label for="fd">From date</label><input type="date" id="fd"></div>
+<div><label for="td">To date</label><input type="date" id="td"></div>
+<div class="full"><button type="button" id="clearFilter" style="width:100%;min-height:44px">Clear search and dates</button></div>
+</div>
 <div class="tot" id="tot"></div>
 <div id="list"></div>
-<div class="actions"><button id="csv">Export CSV</button><button id="wipe" class="danger">Delete all</button></div>
+<div class="actions"><button id="csv">Export CSV</button><button id="imp">Import CSV</button><button id="wipe" class="danger">Delete all</button></div>
+<input type="file" id="impFile" accept=".csv,text/csv" style="display:none">
 <p class="note">Data lives in this browser only. Export a CSV regularly. Clearing browser data erases it.</p>
 </section>
 </main>
@@ -103,6 +124,7 @@ const STOPS = [
   ["avail", "Back in service"]
 ];
 const $ = id => document.getElementById(id);
+let editingId = null;
 
 // Build time + odometer rows
 $("stops").innerHTML = STOPS.map(([k, name]) => `
@@ -140,59 +162,198 @@ function readForm() {
   const t = {}, o = {};
   STOPS.forEach(([k]) => { t[k] = $("t_" + k).value; o[k] = $("o_" + k).value; });
   return {
-    id: Date.now(), date: $("date").value, run: $("run").value.trim(), type: $("type").value,
-    unit: $("unit").value.trim(), from: $("from").value.trim(), to: $("to").value.trim(),
+    id: editingId ?? Date.now(), date: $("date").value, run: $("run").value.trim(), type: $("type").value,
+    unit: $("unit").value.trim(), crew: getCrew(), priority: $("priority").value, outcome: $("outcome").value, from: $("from").value.trim(), to: $("to").value.trim(),
     notes: $("notes").value.trim(), t, o
   };
 }
 
+function checks(r) {
+  const w = []; let pt = null, po = null;
+  STOPS.forEach(([k, name]) => {
+    const t = r.t[k], o = r.o[k];
+    if (t) {
+      if (pt && gap(pt.t, t) > 720) w.push(name + " time (" + t + ") is earlier than " + pt.n.toLowerCase() + " (" + pt.t + ").");
+      pt = { t, n: name };
+    }
+    if (o !== "" && o != null) {
+      if (po && parseFloat(o) < parseFloat(po.o)) w.push(name + " odometer (" + o + ") is lower than " + po.n.toLowerCase() + " (" + po.o + ").");
+      po = { o, n: name };
+    }
+  });
+  return w;
+}
+
 function update() {
-  const f = figures(readForm());
+  const r = readForm(), f = figures(r), w = checks(r);
+  $("warn").hidden = !w.length;
+  $("warn").innerHTML = w.length ? "<b>Check these:</b><br>" + w.map(esc).join("<br>") : "";
   $("calc").innerHTML = [
     [fmtMin(f.response), "Response time"], [fmtMin(f.onScene), "On scene"], [fmtMin(f.transport), "Transport time"],
     [fmtMi(f.responseMi), "Response miles"], [fmtMi(f.loadedMi), "Loaded miles"], [fmtMi(f.totalMi), "Total miles"]
   ].map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join("");
+  saveDraft();
 }
 
+function filtered() {
+  const q = $("q").value.trim().toLowerCase(), fd = $("fd").value, td = $("td").value;
+  return sortedRuns().filter(r => (!fd || (r.date || "") >= fd) && (!td || (r.date || "") <= td) &&
+    (!q || [r.date, r.run, r.unit, r.crew, r.type, r.priority, r.outcome, r.from, r.to, r.notes].join(" ").toLowerCase().includes(q)));
+}
+const sortedRuns = () => load().sort((a, b) => (b.date || "").localeCompare(a.date || "") || b.id - a.id);
 const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; } };
 const store = a => { try { localStorage.setItem(KEY, JSON.stringify(a)); } catch { alert("Could not save. Browser storage may be disabled."); } };
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 function render() {
-  const runs = load().sort((a, b) => (b.date || "").localeCompare(a.date || "") || b.id - a.id);
+  const all = load().length, runs = filtered();
+  const active = $("q").value.trim() || $("fd").value || $("td").value;
   let miles = 0, loaded = 0;
   runs.forEach(r => { const f = figures(r); miles += f.totalMi || 0; loaded += f.loadedMi || 0; });
-  $("tot").innerHTML = `<span>${runs.length} runs</span><span>${miles.toFixed(1)} total mi</span><span>${loaded.toFixed(1)} loaded mi</span>`;
+  $("tot").innerHTML = `<span>${runs.length}${active ? " of " + all : ""} runs</span><span>${miles.toFixed(1)} total mi</span><span>${loaded.toFixed(1)} loaded mi</span>`;
   $("list").innerHTML = runs.length ? runs.map(r => {
     const f = figures(r);
     return `<div class="trip">
       <h3>${esc(r.date)} &nbsp;Run ${esc(r.run) || "–"} (${esc(r.type)})</h3>
       <p>${esc(r.from) || "?"} to ${esc(r.to) || "?"}${r.unit ? " in unit " + esc(r.unit) : ""}</p>
+      ${[r.priority, r.outcome].some(Boolean) ? `<p>${[r.priority, r.outcome].filter(Boolean).map(esc).join(" · ")}</p>` : ""}
+      ${crewList(r.crew).length ? `<p>Crew: ${crewList(r.crew).map(esc).join(", ")}</p>` : ""}
       <p class="nums">Response ${fmtMin(f.response)}, scene ${fmtMin(f.onScene)}, transport ${fmtMin(f.transport)}, total ${fmtMin(f.total)}</p>
       <p class="nums">Loaded ${fmtMi(f.loadedMi)}, total ${fmtMi(f.totalMi)}</p>
       ${r.notes ? `<p>${esc(r.notes)}</p>` : ""}
-      <button class="danger" data-del="${r.id}" style="min-height:40px;margin-top:6px">Delete run</button>
+      <div class="actions" style="margin-top:6px"><button data-edit="${r.id}" style="min-height:40px">Edit run</button><button class="danger" data-del="${r.id}" style="min-height:40px">Delete run</button></div>
     </div>`;
-  }).join("") : `<p class="empty">No runs yet. Fill in the form above and save your first run.</p>`;
+  }).join("") : `<p class="empty">${all ? "No runs match your search or dates." : "No runs yet. Fill in the form above and save your first run."}</p>`;
   document.querySelectorAll("[data-del]").forEach(b => b.onclick = () => {
-    if (confirm("Delete this run?")) { store(load().filter(r => r.id != b.dataset.del)); render(); }
+    if (confirm("Delete this run?")) {
+      if (editingId == b.dataset.del) clearForm();
+      store(load().filter(r => r.id != b.dataset.del)); render();
+    }
   });
+  document.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => startEdit(b.dataset.edit));
+}
+
+function setMode() {
+  const ed = editingId != null;
+  $("formTitle").textContent = ed ? "Edit run" : "New run";
+  $("save").textContent = ed ? "Update run" : "Save run";
+  $("clear").textContent = ed ? "Cancel edit" : "Clear form";
+  $("editBanner").hidden = !ed;
+  $("editBanner").textContent = ed ? "Editing run " + ($("run").value || "–") + " from " + ($("date").value || "") + ". Update to save changes or Cancel edit to discard." : "";
+  $("f").closest("section").classList.toggle("editing", ed);
+}
+
+function prefill() {
+  $("prefillNote").hidden = true;
+  setCrew([]);
+  const last = sortedRuns()[0];
+  if (!last) return;
+  let used = false;
+  const k = ["avail", "dest", "left", "scene", "disp"].find(k => last.o[k] !== "" && last.o[k] != null);
+  if (k) { $("o_disp").value = last.o[k]; used = true; }
+  if (/^\d+$/.test(last.run || "")) { $("run").value = String(parseInt(last.run, 10) + 1).padStart(last.run.length, "0"); used = true; }
+  if (last.unit) { $("unit").value = last.unit; used = true; }
+  if (crewList(last.crew).length) { setCrew(last.crew); used = true; }
+  $("prefillNote").textContent = "Run number, unit, crew and starting odometer are filled from your last run. Change them if needed.";
+  $("prefillNote").hidden = !used;
 }
 
 function clearForm() {
+  editingId = null;
   $("f").reset();
   $("date").value = new Date().toLocaleDateString("en-CA");
+  prefill();
+  setMode();
   update();
+}
+
+const crewList = v => (Array.isArray(v) ? v : String(v || "").split(/[;,]/)).map(x => String(x).trim()).filter(Boolean);
+const getCrew = () => [...document.querySelectorAll(".crewbox")].map(i => i.value.trim()).filter(Boolean);
+function addCrewBox(v) {
+  const n = document.querySelectorAll(".crewbox").length + 1;
+  const i = document.createElement("input");
+  i.className = "crewbox"; i.placeholder = "Crew member " + n; i.setAttribute("aria-label", "Crew member " + n);
+  i.value = v || "";
+  $("crewBoxes").appendChild(i);
+  return i;
+}
+function setCrew(list) {
+  list = crewList(list);
+  $("crewBoxes").innerHTML = "";
+  for (let i = 0; i < Math.max(2, list.length); i++) addCrewBox(list[i]);
+}
+const DKEY = "transportLog.draft";
+const hasContent = () => editingId != null || $("from").value || $("to").value || $("notes").value ||
+  STOPS.some(([k]) => $("t_" + k).value || (k !== "disp" && $("o_" + k).value));
+
+function saveDraft() {
+  try {
+    if (!hasContent()) { localStorage.removeItem(DKEY); return; }
+    const r = readForm(); r.editingId = editingId; delete r.id;
+    localStorage.setItem(DKEY, JSON.stringify(r));
+  } catch {}
+}
+
+function setSel(el, v) {
+  v = v || "";
+  if (v && ![...el.options].some(o => o.value === v)) el.add(new Option(v, v));
+  el.value = v;
+}
+
+function fillForm(r) {
+  $("f").reset();
+  $("date").value = r.date || ""; $("run").value = r.run || ""; $("unit").value = r.unit || ""; setCrew(r.crew);
+  setSel($("type"), r.type || "Emergency"); setSel($("priority"), r.priority); setSel($("outcome"), r.outcome);
+  $("from").value = r.from || ""; $("to").value = r.to || ""; $("notes").value = r.notes || "";
+  STOPS.forEach(([k]) => { $("t_" + k).value = (r.t || {})[k] || ""; $("o_" + k).value = (r.o || {})[k] ?? ""; });
+}
+
+function restoreDraft() {
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem(DKEY)); } catch {}
+  if (!d) return false;
+  editingId = d.editingId != null && load().some(x => x.id == d.editingId) ? d.editingId : null;
+  fillForm(d);
+  $("prefillNote").textContent = "Your unsaved entry was restored.";
+  $("prefillNote").hidden = false;
+  setMode();
+  update();
+  return true;
+}
+
+function startEdit(id) {
+  const r = load().find(r => r.id == id);
+  if (!r) return;
+  if (hasContent() && editingId != r.id && !confirm("Discard what you are entering and open this run instead?")) return;
+  editingId = r.id;
+  fillForm(r);
+  $("prefillNote").hidden = true;
+  setMode();
+  update();
+  $("formTitle").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 $("save").onclick = () => {
   const r = readForm();
   if (!r.date) { alert("Enter a date."); return; }
-  const a = load(); a.push(r); store(a);
+  const w = checks(r);
+  if (w.length && !confirm("Some entries look out of order:\n\n" + w.join("\n") + "\n\nSave anyway?")) return;
+  const a = load();
+  if (editingId != null) { const i = a.findIndex(x => x.id == editingId); if (i >= 0) a[i] = r; else a.push(r); }
+  else a.push(r);
+  store(a);
   clearForm(); render();
 };
-$("clear").onclick = clearForm;
+$("addCrew").onclick = () => { if (document.querySelectorAll(".crewbox").length < 8) addCrewBox().focus(); update(); };
+$("delCrew").onclick = () => { const b = document.querySelectorAll(".crewbox"); if (b.length > 2) { b[b.length - 1].remove(); update(); } };
+$("clear").onclick = () => {
+  if (hasContent() && !confirm(editingId != null ? "Discard your changes to this run?" : "Clear everything you entered?")) return;
+  clearForm();
+};
 $("f").addEventListener("input", update);
+$("f").addEventListener("change", update);
+["q", "fd", "td"].forEach(id => $(id).addEventListener("input", render));
+$("clearFilter").onclick = () => { $("q").value = ""; $("fd").value = ""; $("td").value = ""; render(); };
 
 $("wipe").onclick = () => {
   if (load().length && confirm("Delete every saved run? This cannot be undone.")) { store([]); render(); }
@@ -201,13 +362,13 @@ $("wipe").onclick = () => {
 $("csv").onclick = () => {
   const runs = load();
   if (!runs.length) { alert("No runs to export."); return; }
-  const head = ["Date", "Run", "Type", "Unit", "Pickup", "Destination"];
+  const head = ["Date", "Run", "Type", "Unit", "Crew", "Priority", "Outcome", "Pickup", "Destination"];
   STOPS.forEach(([, n]) => head.push(n + " time", n + " odometer"));
   head.push("Response min", "On scene min", "Transport min", "Total min", "Response mi", "Loaded mi", "Total mi", "Notes");
   const q = v => '"' + String(v ?? "").replace(/"/g, '""') + '"';
   const rows = runs.map(r => {
     const f = figures(r);
-    const row = [r.date, r.run, r.type, r.unit, r.from, r.to];
+    const row = [r.date, r.run, r.type, r.unit, crewList(r.crew).join("; "), r.priority, r.outcome, r.from, r.to];
     STOPS.forEach(([k]) => row.push(r.t[k], r.o[k]));
     row.push(f.response, f.onScene, f.transport, f.total, f.responseMi?.toFixed(1), f.loadedMi?.toFixed(1), f.totalMi?.toFixed(1), r.notes);
     return row.map(q).join(",");
@@ -227,7 +388,56 @@ function tick() {
 }
 tick(); setInterval(tick, 1000);
 
-clearForm(); render();
+function parseCSV(text) {
+  text = text.replace(/^\uFEFF/, "");
+  const rows = []; let row = [], cur = "", q = false;
+  const endRow = () => { row.push(cur); cur = ""; if (row.length > 1 || row[0] !== "") rows.push(row); row = []; };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
+    else if (c === '"') q = true;
+    else if (c === ",") { row.push(cur); cur = ""; }
+    else if (c === "\n" || c === "\r") { if (c === "\r" && text[i + 1] === "\n") i++; endRow(); }
+    else cur += c;
+  }
+  if (cur !== "" || row.length) endRow();
+  return rows;
+}
+
+$("imp").onclick = () => $("impFile").click();
+$("impFile").onchange = async e => {
+  const file = e.target.files[0]; e.target.value = "";
+  if (!file) return;
+  let rows;
+  try { rows = parseCSV(await file.text()); } catch { alert("Could not read that file."); return; }
+  const head = (rows[0] || []).map(h => h.trim());
+  const col = n => head.indexOf(n);
+  if (rows.length < 2 || col("Date") < 0) { alert("No runs found. Use a file exported from this log."); return; }
+  const get = (r, n) => { const i = col(n); return i < 0 ? "" : (r[i] ?? "").trim(); };
+  const sig = r => [r.date, r.run, r.type, r.unit, r.from, r.to, ...STOPS.map(([k]) => r.t[k] + "|" + r.o[k]), r.notes].join("\u0001");
+  const a = load(); const have = new Set(a.map(sig));
+  let added = 0, skipped = 0;
+  rows.slice(1).forEach((row, i) => {
+    const t = {}, o = {};
+    STOPS.forEach(([k, name]) => {
+      const tv = get(row, name + " time"), ov = get(row, name + " odometer");
+      t[k] = /^\d{1,2}:\d{2}$/.test(tv) ? tv.padStart(5, "0") : "";
+      o[k] = ov !== "" && isFinite(Number(ov)) ? ov : "";
+    });
+    const r = { id: Date.now() + i, date: get(row, "Date"), run: get(row, "Run"), type: get(row, "Type") || "Emergency",
+      unit: get(row, "Unit"), crew: crewList(get(row, "Crew")), priority: get(row, "Priority"), outcome: get(row, "Outcome"), from: get(row, "Pickup"), to: get(row, "Destination"), notes: get(row, "Notes"), t, o };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(r.date)) { skipped++; return; }
+    const s = sig(r);
+    if (have.has(s)) { skipped++; return; }
+    have.add(s); a.push(r); added++;
+  });
+  if (added) store(a);
+  render();
+  alert("Imported " + added + " run" + (added === 1 ? "" : "s") + (skipped ? ". Skipped " + skipped + " (duplicate or invalid date)." : "."));
+};
+
+if (!restoreDraft()) clearForm();
+render();
 </script>
 </body>
 </html>
