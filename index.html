@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transport Log</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--ink:#15202b;--mute:#5b6773;--line:#d5dae0;--blue:#0b4f9c;--red:#c8262b;--ok:#157347}
+@media(prefers-color-scheme:dark){:root{--bg:#10151b;--card:#18202a;--ink:#eef2f6;--mute:#9aa7b4;--line:#2b3744;--blue:#5aa2f0;--red:#ff6b6e;--ok:#4cc38a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.stripe{height:12px;background:repeating-linear-gradient(135deg,var(--red) 0 16px,#fff 16px 32px,var(--blue) 32px 48px,#fff 48px 64px)}
+main{max-width:720px;margin:0 auto;padding:16px}
+h1{font-size:1.6rem;margin:12px 0 4px}
+h2{font-size:1.1rem;margin:0 0 12px}
+.sub{color:var(--mute);margin:0 0 16px;font-size:.9rem}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+label{display:block;font-size:.85rem;color:var(--mute);margin-bottom:4px}
+input,select,textarea{width:100%;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;min-height:48px}
+input:focus,select:focus,textarea:focus,button:focus-visible{outline:3px solid var(--blue);outline-offset:1px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.full{grid-column:1/-1}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:end}
+.row button{min-height:48px}
+button{font:inherit;font-weight:600;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:10px 14px;cursor:pointer}
+button.now{border-color:var(--blue);color:var(--blue)}
+button.primary{background:var(--blue);border-color:var(--blue);color:#fff;min-height:52px;width:100%}
+@media(prefers-color-scheme:dark){button.primary{color:#07111c}}
+button.danger{color:var(--red)}
+.calc{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+.calc div{background:var(--bg);border-radius:8px;padding:8px 10px}
+.calc b{display:block;font-size:1.2rem}
+.calc span{font-size:.78rem;color:var(--mute)}
+.actions{display:flex;gap:8px;margin-top:12px}
+.actions button{flex:1}
+.trip{border-top:1px solid var(--line);padding:12px 0}
+.trip:first-of-type{border-top:0}
+.trip h3{margin:0;font-size:1rem}
+.trip p{margin:2px 0;color:var(--mute);font-size:.88rem}
+.trip .nums{color:var(--ink);font-weight:600}
+.tot{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px;font-weight:600}
+.empty{color:var(--mute)}
+.note{font-size:.8rem;color:var(--mute)}
+@media(max-width:420px){.calc{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="stripe"></div>
+<main>
+<h1>Transport log</h1>
+<p class="sub">Record times and odometer readings for each run. Entries are saved on this device.</p>
+
+<section>
+<h2>New run</h2>
+<form id="f" onsubmit="return false">
+<div class="grid">
+<div><label for="date">Date</label><input type="date" id="date"></div>
+<div><label for="run">Run number</label><input id="run" inputmode="numeric"></div>
+<div><label for="type">Run type</label>
+<select id="type"><option>Emergency</option><option>Non-emergency</option><option>Interfacility</option><option>Standby</option></select></div>
+<div><label for="unit">Unit</label><input id="unit"></div>
+<div class="full"><label for="from">Pickup location</label><input id="from"></div>
+<div class="full"><label for="to">Destination</label><input id="to"></div>
+</div>
+
+<h2 style="margin-top:20px">Times and odometer</h2>
+<div id="stops"></div>
+
+<div class="calc" id="calc"></div>
+
+<div class="full" style="margin-top:12px"><label for="notes">Notes (no patient names or identifiers)</label><textarea id="notes" rows="2"></textarea></div>
+<div class="actions" style="margin-top:16px"><button class="primary" id="save">Save run</button></div>
+<div class="actions"><button id="clear">Clear form</button></div>
+</form>
+</section>
+
+<section>
+<h2>Saved runs</h2>
+<div class="tot" id="tot"></div>
+<div id="list"></div>
+<div class="actions"><button id="csv">Export CSV</button><button id="wipe" class="danger">Delete all</button></div>
+<p class="note">Data lives in this browser only. Export a CSV regularly. Clearing browser data erases it.</p>
+</section>
+</main>
+
+<script>
+const KEY = "transportLog.v1";
+const STOPS = [
+  ["disp", "Dispatched"],
+  ["scene", "On scene"],
+  ["left", "Left scene"],
+  ["dest", "At destination"],
+  ["avail", "Back in service"]
+];
+const $ = id => document.getElementById(id);
+
+// Build time + odometer rows
+$("stops").innerHTML = STOPS.map(([k, name]) => `
+  <div class="row" style="margin-bottom:10px">
+    <div><label for="t_${k}">${name} time</label><input type="time" id="t_${k}"></div>
+    <div><label for="o_${k}">${name} odometer</label><input type="number" step="0.1" min="0" inputmode="decimal" id="o_${k}"></div>
+    <button type="button" class="now" data-k="${k}" style="grid-column:1/-1;min-height:40px">Set ${name.toLowerCase()} time to now</button>
+  </div>`).join("");
+
+document.querySelectorAll(".now").forEach(b => b.onclick = () => {
+  const d = new Date();
+  $("t_" + b.dataset.k).value = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  update();
+});
+
+const toMin = t => { if (!t) return null; const [h, m] = t.split(":").map(Number); return h * 60 + m; };
+const gap = (a, b) => { a = toMin(a); b = toMin(b); if (a == null || b == null) return null; let d = b - a; if (d < 0) d += 1440; return d; };
+const mi = (a, b) => { if (a === "" || b === "" || a == null || b == null) return null; const d = parseFloat(b) - parseFloat(a); return isNaN(d) || d < 0 ? null : d; };
+const fmtMin = m => m == null ? "–" : m >= 60 ? Math.floor(m / 60) + "h " + (m % 60) + "m" : m + " min";
+const fmtMi = x => x == null ? "–" : x.toFixed(1) + " mi";
+
+function figures(r) {
+  return {
+    response: gap(r.t.disp, r.t.scene),
+    onScene: gap(r.t.scene, r.t.left),
+    transport: gap(r.t.left, r.t.dest),
+    total: gap(r.t.disp, r.t.avail ?? r.t.dest),
+    responseMi: mi(r.o.disp, r.o.scene),
+    loadedMi: mi(r.o.left, r.o.dest),
+    totalMi: mi(r.o.disp, r.o.avail !== "" && r.o.avail != null ? r.o.avail : r.o.dest)
+  };
+}
+
+function readForm() {
+  const t = {}, o = {};
+  STOPS.forEach(([k]) => { t[k] = $("t_" + k).value; o[k] = $("o_" + k).value; });
+  return {
+    id: Date.now(), date: $("date").value, run: $("run").value.trim(), type: $("type").value,
+    unit: $("unit").value.trim(), from: $("from").value.trim(), to: $("to").value.trim(),
+    notes: $("notes").value.trim(), t, o
+  };
+}
+
+function update() {
+  const f = figures(readForm());
+  $("calc").innerHTML = [
+    [fmtMin(f.response), "Response time"], [fmtMin(f.onScene), "On scene"], [fmtMin(f.transport), "Transport time"],
+    [fmtMi(f.responseMi), "Response miles"], [fmtMi(f.loadedMi), "Loaded miles"], [fmtMi(f.totalMi), "Total miles"]
+  ].map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join("");
+}
+
+const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; } };
+const store = a => { try { localStorage.setItem(KEY, JSON.stringify(a)); } catch { alert("Could not save. Browser storage may be disabled."); } };
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function render() {
+  const runs = load().sort((a, b) => (b.date || "").localeCompare(a.date || "") || b.id - a.id);
+  let miles = 0, loaded = 0;
+  runs.forEach(r => { const f = figures(r); miles += f.totalMi || 0; loaded += f.loadedMi || 0; });
+  $("tot").innerHTML = `<span>${runs.length} runs</span><span>${miles.toFixed(1)} total mi</span><span>${loaded.toFixed(1)} loaded mi</span>`;
+  $("list").innerHTML = runs.length ? runs.map(r => {
+    const f = figures(r);
+    return `<div class="trip">
+      <h3>${esc(r.date)} &nbsp;Run ${esc(r.run) || "–"} (${esc(r.type)})</h3>
+      <p>${esc(r.from) || "?"} to ${esc(r.to) || "?"}${r.unit ? " in unit " + esc(r.unit) : ""}</p>
+      <p class="nums">Response ${fmtMin(f.response)}, scene ${fmtMin(f.onScene)}, transport ${fmtMin(f.transport)}, total ${fmtMin(f.total)}</p>
+      <p class="nums">Loaded ${fmtMi(f.loadedMi)}, total ${fmtMi(f.totalMi)}</p>
+      ${r.notes ? `<p>${esc(r.notes)}</p>` : ""}
+      <button class="danger" data-del="${r.id}" style="min-height:40px;margin-top:6px">Delete run</button>
+    </div>`;
+  }).join("") : `<p class="empty">No runs yet. Fill in the form above and save your first run.</p>`;
+  document.querySelectorAll("[data-del]").forEach(b => b.onclick = () => {
+    if (confirm("Delete this run?")) { store(load().filter(r => r.id != b.dataset.del)); render(); }
+  });
+}
+
+function clearForm() {
+  $("f").reset();
+  $("date").value = new Date().toLocaleDateString("en-CA");
+  update();
+}
+
+$("save").onclick = () => {
+  const r = readForm();
+  if (!r.date) { alert("Enter a date."); return; }
+  const a = load(); a.push(r); store(a);
+  clearForm(); render();
+};
+$("clear").onclick = clearForm;
+$("f").addEventListener("input", update);
+
+$("wipe").onclick = () => {
+  if (load().length && confirm("Delete every saved run? This cannot be undone.")) { store([]); render(); }
+};
+
+$("csv").onclick = () => {
+  const runs = load();
+  if (!runs.length) { alert("No runs to export."); return; }
+  const head = ["Date", "Run", "Type", "Unit", "Pickup", "Destination"];
+  STOPS.forEach(([, n]) => head.push(n + " time", n + " odometer"));
+  head.push("Response min", "On scene min", "Transport min", "Total min", "Response mi", "Loaded mi", "Total mi", "Notes");
+  const q = v => '"' + String(v ?? "").replace(/"/g, '""') + '"';
+  const rows = runs.map(r => {
+    const f = figures(r);
+    const row = [r.date, r.run, r.type, r.unit, r.from, r.to];
+    STOPS.forEach(([k]) => row.push(r.t[k], r.o[k]));
+    row.push(f.response, f.onScene, f.transport, f.total, f.responseMi?.toFixed(1), f.loadedMi?.toFixed(1), f.totalMi?.toFixed(1), r.notes);
+    return row.map(q).join(",");
+  });
+  const blob = new Blob([[head.map(q).join(","), ...rows].join("\n")], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "transport-log-" + new Date().toLocaleDateString("en-CA") + ".csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+clearForm(); render();
+</script>
+</body>
+</html>
