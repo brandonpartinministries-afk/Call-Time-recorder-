@@ -56,6 +56,7 @@ button.danger{color:var(--red)}
 .calc span{font-size:.78rem;color:var(--mute)}
 .actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 .editing{border-color:var(--blue)}
+.ts{color:var(--blue);font-weight:600;margin-left:6px}
 .stoplog{display:grid;grid-template-columns:1fr auto auto;gap:2px 18px;font-size:.88rem;margin:8px 0}
 .stoplog .h{color:var(--mute);font-size:.75rem}
 .stoplog .r,.stoplog b{text-align:right}
@@ -176,21 +177,21 @@ let editingId = null;
 // Build time + odometer rows
 $("stops").innerHTML = STOPS.map(([k, name]) => `
   <div class="row" style="margin-bottom:10px">
-    <div><label for="t_${k}">${name} time</label><input type="time" id="t_${k}"></div>
+    <div><label for="t_${k}">${name} time<span class="ts" id="ts_${k}"></span></label><input type="time" step="1" id="t_${k}"></div>
     <div><label for="o_${k}">${name} odometer</label><input type="number" step="0.1" min="0" inputmode="decimal" id="o_${k}"></div>
     <button type="button" class="now" data-k="${k}" style="grid-column:1/-1;min-height:40px">Set ${name.toLowerCase()} time to now</button>
   </div>`).join("");
 
 document.querySelectorAll(".now").forEach(b => b.onclick = () => {
   const d = new Date();
-  $("t_" + b.dataset.k).value = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  $("t_" + b.dataset.k).value = nowHMS();
   update();
 });
 
-const toMin = t => { if (!t) return null; const [h, m] = t.split(":").map(Number); return h * 60 + m; };
-const gap = (a, b) => { a = toMin(a); b = toMin(b); if (a == null || b == null) return null; let d = b - a; if (d < 0) d += 1440; return d; };
+const toSec = t => { if (!t) return null; const [h, m, x] = t.split(":").map(Number); return h * 3600 + m * 60 + (x || 0); };
+const gap = (a, b) => { a = toSec(a); b = toSec(b); if (a == null || b == null) return null; let d = b - a; if (d < 0) d += 86400; return d; };
 const mi = (a, b) => { if (a === "" || b === "" || a == null || b == null) return null; const d = parseFloat(b) - parseFloat(a); return isNaN(d) || d < 0 ? null : d; };
-const fmtMin = m => m == null ? "–" : m >= 60 ? Math.floor(m / 60) + "h " + (m % 60) + "m" : m + " min";
+const fmtDur = s => { if (s == null) return "–"; const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return h ? h + "h " + m + "m " + x + "s" : m ? m + "m " + x + "s" : x + "s"; };
 const fmtMi = x => x == null ? "–" : x.toFixed(1) + " mi";
 
 function figures(r) {
@@ -220,7 +221,7 @@ function checks(r) {
   STOPS.forEach(([k, name]) => {
     const t = r.t[k], o = r.o[k];
     if (t) {
-      if (pt && gap(pt.t, t) > 720) w.push(name + " time (" + t + ") is earlier than " + pt.n.toLowerCase() + " (" + pt.t + ").");
+      if (pt && gap(pt.t, t) > 43200) w.push(name + " time (" + t + ") is earlier than " + pt.n.toLowerCase() + " (" + pt.t + ").");
       pt = { t, n: name };
     }
     if (o !== "" && o != null) {
@@ -236,9 +237,10 @@ function update() {
   $("warn").hidden = !w.length;
   $("warn").innerHTML = w.length ? "<b>Check these:</b><br>" + w.map(esc).join("<br>") : "";
   $("calc").innerHTML = [
-    [fmtMin(f.response), "Response time"], [fmtMin(f.onScene), "On scene"], [fmtMin(f.transport), "Transport time"],
+    [fmtDur(f.response), "Response time"], [fmtDur(f.onScene), "On scene"], [fmtDur(f.transport), "Transport time"],
     [fmtMi(f.responseMi), "Response miles"], [fmtMi(f.loadedMi), "Loaded miles"], [fmtMi(f.totalMi), "Total miles"]
   ].map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join("");
+  STOPS.forEach(([k]) => { const v = $("t_" + k).value; $("ts_" + k).textContent = v.length > 5 ? v : ""; });
   saveDraft();
   renderChips();
   updateStamp();
@@ -262,7 +264,7 @@ function render() {
   runs.forEach(r => { const f = figures(r); miles += f.totalMi || 0; loaded += f.loadedMi || 0; });
   const figs = runs.map(figures), ar = avg(figs.map(f => f.response)), at = avg(figs.map(f => f.transport));
   $("tot").innerHTML = `<span>${runs.length}${active ? " of " + all : ""} runs</span><span>${miles.toFixed(1)} total mi</span><span>${loaded.toFixed(1)} loaded mi</span>` +
-    (ar != null ? `<span>Avg response ${fmtMin(Math.round(ar))}</span>` : "") + (at != null ? `<span>Avg transport ${fmtMin(Math.round(at))}</span>` : "");
+    (ar != null ? `<span>Avg response ${fmtDur(Math.round(ar))}</span>` : "") + (at != null ? `<span>Avg transport ${fmtDur(Math.round(at))}</span>` : "");
   $("list").innerHTML = runs.length ? runs.map(r => {
     const f = figures(r);
     const shown = STOPS.filter(([k]) => r.t[k] || (r.o[k] !== "" && r.o[k] != null));
@@ -273,7 +275,7 @@ function render() {
       <p>${esc(r.from) || "?"} to ${esc(r.to) || "?"}${r.unit ? " in unit " + esc(r.unit) : ""}</p>
       ${[r.priority, r.outcome].some(Boolean) ? `<p>${[r.priority, r.outcome].filter(Boolean).map(esc).join(" · ")}</p>` : ""}
       ${crewList(r.crew).length ? `<p>Crew: ${crewList(r.crew).map(esc).join(", ")}</p>` : ""}
-      <p class="nums">Response ${fmtMin(f.response)}, scene ${fmtMin(f.onScene)}, transport ${fmtMin(f.transport)}, total ${fmtMin(f.total)}</p>
+      <p class="nums">Response ${fmtDur(f.response)}, scene ${fmtDur(f.onScene)}, transport ${fmtDur(f.transport)}, total ${fmtDur(f.total)}</p>
       <p class="nums">Loaded ${fmtMi(f.loadedMi)}, total ${fmtMi(f.totalMi)}</p>
       ${log}
       ${r.notes ? `<p>${esc(r.notes)}</p>` : ""}
@@ -377,7 +379,7 @@ function restoreDraft() {
   return true;
 }
 
-const nowHM = () => { const d = new Date(); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); };
+const nowHMS = () => { const d = new Date(), z = n => String(n).padStart(2, "0"); return z(d.getHours()) + ":" + z(d.getMinutes()) + ":" + z(d.getSeconds()); };
 function updateStamp() {
   const next = STOPS.find(([k]) => !$("t_" + k).value);
   $("stamp").disabled = !next;
@@ -386,7 +388,7 @@ function updateStamp() {
 $("stamp").onclick = () => {
   const next = STOPS.find(([k]) => !$("t_" + k).value);
   if (!next) return;
-  $("t_" + next[0]).value = nowHM();
+  $("t_" + next[0]).value = nowHMS();
   update();
 };
 
@@ -504,14 +506,14 @@ function buildReport() {
   const range = fd || td ? (fd || "start") + " to " + (td || "present") : "All dates";
   const figs = runs.map(figures);
   const sum = k => figs.reduce((t, f) => t + (f[k] || 0), 0);
-  const av = k => { const v = avg(figs.map(f => f[k])); return v == null ? "–" : fmtMin(Math.round(v)); };
+  const av = k => { const v = avg(figs.map(f => f[k])); return v == null ? "–" : fmtDur(Math.round(v)); };
   const rows = runs.map((r, i) => {
     const f = figs[i];
     const shown = STOPS.filter(([k]) => r.t[k] || (r.o[k] !== "" && r.o[k] != null));
     const sub = shown.length ? `<tr class="sub"><td colspan="13">` + shown.map(([k, n]) => esc(n + " " + (r.t[k] || "–") + " · " + ((r.o[k] !== "" && r.o[k] != null) ? r.o[k] : "–"))).join("&nbsp;&nbsp;|&nbsp;&nbsp;") + `</td></tr>` : "";
     return `<tbody><tr><td>${esc(r.date)}</td><td>${esc(r.run)}</td><td>${esc(r.type)}${r.priority ? "<br>" + esc(r.priority) : ""}</td><td>${esc(r.unit)}</td>` +
       `<td>${crewList(r.crew).map(esc).join(", ")}</td><td>${esc(r.from) || "?"} to ${esc(r.to) || "?"}</td><td>${esc(r.outcome)}</td>` +
-      `<td>${fmtMin(f.response)}</td><td>${fmtMin(f.onScene)}</td><td>${fmtMin(f.transport)}</td><td>${fmtMin(f.total)}</td><td>${fmtMi(f.loadedMi)}</td><td>${fmtMi(f.totalMi)}</td></tr>${sub}</tbody>`;
+      `<td>${fmtDur(f.response)}</td><td>${fmtDur(f.onScene)}</td><td>${fmtDur(f.transport)}</td><td>${fmtDur(f.total)}</td><td>${fmtMi(f.loadedMi)}</td><td>${fmtMi(f.totalMi)}</td></tr>${sub}</tbody>`;
   }).join("");
   $("report").innerHTML = `<h1>Transport report</h1>
     <p>${esc(range)}${q ? " · search: " + esc(q) : ""} · ${runs.length} run${runs.length === 1 ? "" : "s"} · printed ${esc(new Date().toLocaleString())}</p>
@@ -582,7 +584,7 @@ function exportCsv() {
     const f = figures(r);
     const row = [r.date, r.run, r.type, r.unit, crewList(r.crew).join("; "), r.priority, r.outcome, r.from, r.to];
     STOPS.forEach(([k]) => row.push(r.t[k], r.o[k]));
-    row.push(f.response, f.onScene, f.transport, f.total, f.responseMi?.toFixed(1), f.loadedMi?.toFixed(1), f.totalMi?.toFixed(1), r.notes);
+    row.push(...[f.response, f.onScene, f.transport, f.total].map(x => x == null ? "" : (x / 60).toFixed(2)), f.responseMi?.toFixed(1), f.loadedMi?.toFixed(1), f.totalMi?.toFixed(1), r.notes);
     return row.map(q).join(",");
   });
   const blob = new Blob([[head.map(q).join(","), ...rows].join("\n")], { type: "text/csv" });
@@ -636,7 +638,7 @@ $("impFile").onchange = async e => {
     const t = {}, o = {};
     STOPS.forEach(([k, name]) => {
       const tv = get(row, name + " time"), ov = get(row, name + " odometer");
-      t[k] = /^\d{1,2}:\d{2}$/.test(tv) ? tv.padStart(5, "0") : "";
+      t[k] = /^\d{1,2}:\d{2}(:\d{2})?$/.test(tv) ? tv.replace(/^(\d):/, "0$1:") : "";
       o[k] = ov !== "" && isFinite(Number(ov)) ? ov : "";
     });
     const r = { id: Date.now() + i, date: get(row, "Date"), run: get(row, "Run"), type: get(row, "Type") || "Emergency",
