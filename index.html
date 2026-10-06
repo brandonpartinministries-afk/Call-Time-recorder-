@@ -215,14 +215,26 @@ const KEY = "transportLog.v1";
 const STOPS = [
   ["disp", "Dispatched"],
   ["enr", "Enroute"],
+  ["staged", "Staged"],
   ["scene", "On scene"],
   ["pt", "Patient contact"],
   ["left", "Left scene"],
   ["dest", "At destination"],
   ["avail", "Back in service"],
-  ["base", "Back at base"]
+  ["base", "Back at base"],
+  ["bv", "Baseline vitals"],
+  ["ia", "Initial assessment"],
+  ["cprs", "CPR start"],
+  ["cpre", "CPR end"],
+  ["radio", "Radio report"],
+  ["sa", "Secondary assessment"],
+  ["tc", "Transferred care"]
 ];
-const hasOdo = k => k !== "enr" && k !== "pt";
+// Patient-care times can happen in any order, so they skip the time-order check and the "Stamp now" sequence.
+const CARE = ["bv", "ia", "cprs", "cpre", "radio", "sa", "tc"];
+const isCare = k => CARE.includes(k);
+const hasOdo = k => !isCare(k) && k !== "enr" && k !== "staged" && k !== "pt";
+const skipStamp = k => isCare(k) || k === "staged";
 const $ = id => document.getElementById(id);
 let editingId = null;
 let agencies = [], curId = "";
@@ -258,17 +270,36 @@ async function recoverFromMirror() {
 }
 
 // Build time + odometer rows
-$("stops").innerHTML = STOPS.map(([k, name]) => `
+const vitalsHtml = `<div id="vitalsBox" style="margin-bottom:10px"><div id="vitalsList"></div><button type="button" class="nowc" id="vitalsAdd" style="min-height:40px;width:100%">+ Add vitals time</button></div>`;
+$("stops").innerHTML = STOPS.map(([k, name]) => `${k === CARE[0] ? '<h2 style="margin-top:20px">Patient care times</h2>' : ""}
   <div class="row" style="margin-bottom:10px">
     <div${hasOdo(k) ? "" : ' style="grid-column:1/-1"'}><label for="t_${k}">${name} time<span class="ts" id="ts_${k}"></span></label><input type="time" step="1" id="t_${k}"></div>
     ${hasOdo(k) ? `<div><label for="o_${k}">${name} odometer</label><input type="number" step="0.1" min="0" inputmode="decimal" id="o_${k}"></div>` : ""}
     <button type="button" class="now" data-k="${k}" style="grid-column:1/-1;min-height:40px">Set ${name.toLowerCase()} time to now</button>
-  </div>`).join("");
+  </div>${k === "bv" ? vitalsHtml : ""}`).join("");
 
 document.querySelectorAll(".now").forEach(b => b.onclick = () => {
   const d = new Date();
   $("t_" + b.dataset.k).value = nowHMS();
   update();
+});
+
+let vitalsSeq = 0;
+const renumberVitals = () => document.querySelectorAll("#vitalsList .vrow").forEach((row, i) => { row.querySelector("label").textContent = "Repeat vitals " + (i + 1) + " time"; });
+function addVitalsRow(v) {
+  const id = "vt_" + (++vitalsSeq), d = document.createElement("div");
+  d.className = "row vrow"; d.style.marginBottom = "10px";
+  d.innerHTML = `<div><label for="${id}">Repeat vitals time</label><input type="time" step="1" class="vt" id="${id}"></div><div style="display:flex;gap:8px"><button type="button" class="nowc vnow" style="flex:1">Now</button><button type="button" class="danger vdel" style="flex:1">Delete</button></div>`;
+  $("vitalsList").appendChild(d);
+  d.querySelector("input").value = v || "";
+  renumberVitals();
+}
+const setVitals = list => { $("vitalsList").innerHTML = ""; (list || []).forEach(v => addVitalsRow(v)); };
+$("vitalsAdd").onclick = () => { addVitalsRow(""); update(); };
+$("vitalsList").addEventListener("click", e => {
+  const row = e.target.closest(".vrow"); if (!row) return;
+  if (e.target.closest(".vdel")) { row.remove(); renumberVitals(); update(); }
+  else if (e.target.closest(".vnow")) { row.querySelector("input").value = nowHMS(); update(); }
 });
 
 const toSec = t => { if (!t) return null; const [h, m, x] = t.split(":").map(Number); return h * 3600 + m * 60 + (x || 0); };
@@ -306,7 +337,7 @@ function readForm() {
   return {
     id: editingId ?? Date.now(), date: $("date").value, run: $("run").value.trim(), type: $("type").value,
     unit: $("unit").value.trim(), crew: getCrew(), priority: $("priority").value, outcome: $("outcome").value, from: $("from").value.trim(), to: $("to").value.trim(),
-    notes: $("notes").value.trim(), t, o, cancel: readCancel()
+    notes: $("notes").value.trim(), t, o, cancel: readCancel(), vitals: [...document.querySelectorAll("#vitalsList .vt")].map(i => i.value).filter(Boolean)
   };
 }
 
@@ -314,7 +345,7 @@ function checks(r) {
   const w = []; let pt = null, po = null;
   STOPS.forEach(([k, name]) => {
     const t = r.t[k], o = r.o[k];
-    if (t) {
+    if (t && !isCare(k)) {
       if (pt && gap(pt.t, t) > 43200) w.push(name + " time (" + t + ") is earlier than " + pt.n.toLowerCase() + " (" + pt.t + ").");
       pt = { t, n: name };
     }
@@ -323,6 +354,7 @@ function checks(r) {
       po = { o, n: name };
     }
   });
+  if (r.t.cprs && r.t.cpre && gap(r.t.cprs, r.t.cpre) > 43200) w.push("CPR end (" + r.t.cpre + ") is earlier than CPR start (" + r.t.cprs + ").");
   return w;
 }
 
@@ -368,7 +400,7 @@ function render() {
     const f = figures(r);
     const shown = STOPS.filter(([k]) => r.t[k] || (r.o[k] !== "" && r.o[k] != null));
     const log = shown.length ? `<div class="stoplog"><span class="h"></span><span class="h r">Time</span><span class="h r">Odometer</span>` +
-      shown.map(([k, n]) => `<span>${n}</span><b>${esc(r.t[k]) || "–"}</b><b>${esc(r.o[k]) || "–"}</b>`).join("") + `</div>` : "";
+      shown.map(([k, n]) => `<span>${n}</span><b>${esc(r.t[k]) || "–"}</b><b>${hasOdo(k) ? (esc(r.o[k]) || "–") : ""}</b>`).join("") + `</div>` : "";
     return `<div class="trip">
       <h3>${esc(r.date)} &nbsp;Run ${esc(r.run) || "–"} (${esc(r.type)})</h3>
       <p>${esc(r.from) || "?"} to ${esc(r.to) || "?"}${r.unit ? " in unit " + esc(r.unit) : ""}</p>
@@ -378,6 +410,7 @@ function render() {
       <p class="nums">Response ${fmtDur(f.response)}, scene ${fmtDur(f.onScene)}, transport ${fmtDur(f.transport)}, total ${fmtDur(f.total)}</p>
       <p class="nums">Loaded ${fmtMi(f.loadedMi)}, total ${fmtMi(f.totalMi)}</p>
       ${log}
+      ${(r.vitals || []).length ? `<p class="nums">Repeat vitals: ${r.vitals.map(esc).join(", ")}</p>` : ""}
       ${r.notes ? `<p>${esc(r.notes)}</p>` : ""}
       <div class="actions" style="margin-top:6px"><button data-edit="${r.id}" style="min-height:40px">Edit</button><button data-dup="${r.id}" style="min-height:40px">Duplicate</button><button class="danger" data-del="${r.id}" style="min-height:40px">Delete</button></div>
     </div>`;
@@ -419,6 +452,7 @@ function prefill() {
 function clearForm() {
   editingId = null;
   $("f").reset();
+  setVitals([]);
   $("date").value = new Date().toLocaleDateString("en-CA");
   prefill();
   setMode();
@@ -442,7 +476,7 @@ function setCrew(list) {
 }
 const DKEY = "transportLog.draft";
 const hasContent = () => editingId != null || $("from").value || $("to").value || $("notes").value || $("c_stage").value ||
-  STOPS.some(([k]) => $("t_" + k).value || (k !== "disp" && hasOdo(k) && $("o_" + k).value));
+  STOPS.some(([k]) => $("t_" + k).value || (k !== "disp" && hasOdo(k) && $("o_" + k).value)) || [...document.querySelectorAll("#vitalsList .vt")].some(i => i.value);
 
 function saveDraft() {
   try {
@@ -466,6 +500,7 @@ function fillForm(r) {
   const c = r.cancel || {};
   setSel($("c_stage"), c.stage); $("c_time").value = c.time || ""; $("c_reason").value = c.reason || ""; $("c_by").value = c.by || "";
   STOPS.forEach(([k]) => { $("t_" + k).value = (r.t || {})[k] || ""; if (hasOdo(k)) $("o_" + k).value = (r.o || {})[k] ?? ""; });
+  setVitals(r.vitals);
 }
 
 function restoreDraft() {
@@ -545,12 +580,12 @@ $("agencyDel").onclick = () => {
 
 const nowHMS = () => { const d = new Date(), z = n => String(n).padStart(2, "0"); return z(d.getHours()) + ":" + z(d.getMinutes()) + ":" + z(d.getSeconds()); };
 function updateStamp() {
-  const next = STOPS.find(([k]) => !$("t_" + k).value);
+  const next = STOPS.find(([k]) => !skipStamp(k) && !$("t_" + k).value);
   $("stamp").disabled = !next;
   $("stamp").textContent = next ? "Stamp now: " + next[1] : "All times stamped";
 }
 $("stamp").onclick = () => {
-  const next = STOPS.find(([k]) => !$("t_" + k).value);
+  const next = STOPS.find(([k]) => !skipStamp(k) && !$("t_" + k).value);
   if (!next) return;
   $("t_" + next[0]).value = nowHMS();
   update();
@@ -674,7 +709,9 @@ function buildReport() {
   const rows = runs.map((r, i) => {
     const f = figs[i];
     const shown = STOPS.filter(([k]) => r.t[k] || (r.o[k] !== "" && r.o[k] != null));
-    const sub = shown.length ? `<tr class="sub"><td colspan="13">` + shown.map(([k, n]) => esc(n + " " + (r.t[k] || "–") + " · " + ((r.o[k] !== "" && r.o[k] != null) ? r.o[k] : "–"))).join("&nbsp;&nbsp;|&nbsp;&nbsp;") + `</td></tr>` : "";
+    const parts = shown.map(([k, n]) => esc(n + " " + (r.t[k] || "–") + (hasOdo(k) ? " · " + ((r.o[k] !== "" && r.o[k] != null) ? r.o[k] : "–") : "")));
+    if ((r.vitals || []).length) parts.push(esc("Repeat vitals " + r.vitals.join(", ")));
+    const sub = parts.length ? `<tr class="sub"><td colspan="13">` + parts.join("&nbsp;&nbsp;|&nbsp;&nbsp;") + `</td></tr>` : "";
     return `<tbody><tr><td>${esc(r.date)}</td><td>${esc(r.run)}</td><td>${esc(r.type)}${r.priority ? "<br>" + esc(r.priority) : ""}</td><td>${esc(r.unit)}</td>` +
       `<td>${crewList(r.crew).map(esc).join(", ")}</td><td>${esc(r.from) || "?"} to ${esc(r.to) || "?"}</td><td>${esc(r.outcome)}${cancelParts(r).length ? "<br>" + cancelParts(r).map(esc).join("<br>") : ""}</td>` +
       `<td>${fmtDur(f.response)}</td><td>${fmtDur(f.onScene)}</td><td>${fmtDur(f.transport)}</td><td>${fmtDur(f.total)}</td><td>${fmtMi(f.loadedMi)}</td><td>${fmtMi(f.totalMi)}</td></tr>${sub}</tbody>`;
@@ -744,13 +781,13 @@ $("wipe").onclick = () => {
 function exportCsv(all) {
   const runs = all ? loadAll() : load();
   if (!runs.length) { alert("No runs to export."); return; }
-  const head = ["Agency", "Date", "Run", "Type", "Unit", "Crew", "Priority", "Outcome", "Pickup", "Destination", "Cancellation", "Cancel time", "Cancel reason", "Cancelled by"];
+  const head = ["Agency", "Date", "Run", "Type", "Unit", "Crew", "Priority", "Outcome", "Pickup", "Destination", "Cancellation", "Cancel time", "Cancel reason", "Cancelled by", "Repeat vitals times"];
   STOPS.forEach(([k, n]) => head.push(...(hasOdo(k) ? [n + " time", n + " odometer"] : [n + " time"])));
   head.push("Response min", "On scene min", "Transport min", "Total min", "Response mi", "Loaded mi", "Total mi", "Notes");
   const q = v => '"' + String(v ?? "").replace(/"/g, '""') + '"';
   const rows = runs.map(r => {
     const f = figures(r);
-    const row = [agencyName(r.agency), r.date, r.run, r.type, r.unit, crewList(r.crew).join("; "), r.priority, r.outcome, r.from, r.to, r.cancel?.stage, r.cancel?.time, r.cancel?.reason, r.cancel?.by];
+    const row = [agencyName(r.agency), r.date, r.run, r.type, r.unit, crewList(r.crew).join("; "), r.priority, r.outcome, r.from, r.to, r.cancel?.stage, r.cancel?.time, r.cancel?.reason, r.cancel?.by, (r.vitals || []).join("; ")];
     STOPS.forEach(([k]) => row.push(...(hasOdo(k) ? [r.t[k], r.o[k]] : [r.t[k]])));
     row.push(...[f.response, f.onScene, f.transport, f.total].map(x => x == null ? "" : (x / 60).toFixed(2)), f.responseMi?.toFixed(1), f.loadedMi?.toFixed(1), f.totalMi?.toFixed(1), r.notes);
     return row.map(q).join(",");
@@ -801,7 +838,7 @@ $("impFile").onchange = async e => {
   const col = n => head.indexOf(n);
   if (rows.length < 2 || col("Date") < 0) { alert("No runs found. Use a file exported from this log."); return; }
   const get = (r, n) => { const i = col(n); return i < 0 ? "" : (r[i] ?? "").trim(); };
-  const sig = r => [r.agency, r.date, r.run, r.type, r.unit, r.from, r.to, ...STOPS.map(([k]) => (r.t[k] || "") + "|" + (r.o[k] ?? "")), r.notes, r.cancel?.stage || "", r.cancel?.time || "", r.cancel?.reason || "", r.cancel?.by || ""].join("\u0001");
+  const sig = r => [r.agency, r.date, r.run, r.type, r.unit, r.from, r.to, ...STOPS.map(([k]) => (r.t[k] || "") + "|" + (r.o[k] ?? "")), r.notes, r.cancel?.stage || "", r.cancel?.time || "", r.cancel?.reason || "", r.cancel?.by || "", (r.vitals || []).join(",")].join("\u0001");
   const a = loadAll(); const have = new Set(a.map(sig));
   let added = 0, skipped = 0, addedAg = 0;
   // runs go to the agency named in the file's Agency column (created if new); blank means the selected agency
@@ -821,7 +858,8 @@ $("impFile").onchange = async e => {
     });
     const r = { id: Date.now() + i, date: get(row, "Date"), run: get(row, "Run"), type: get(row, "Type") || "Emergency",
       unit: get(row, "Unit"), crew: crewList(get(row, "Crew")), priority: get(row, "Priority"), outcome: get(row, "Outcome"), from: get(row, "Pickup"), to: get(row, "Destination"), notes: get(row, "Notes"), t, o,
-      cancel: { stage: get(row, "Cancellation"), time: (v => /^\d{1,2}:\d{2}(:\d{2})?$/.test(v) ? v.replace(/^(\d):/, "0$1:") : "")(get(row, "Cancel time")), reason: get(row, "Cancel reason"), by: get(row, "Cancelled by") } };
+      cancel: { stage: get(row, "Cancellation"), time: (v => /^\d{1,2}:\d{2}(:\d{2})?$/.test(v) ? v.replace(/^(\d):/, "0$1:") : "")(get(row, "Cancel time")), reason: get(row, "Cancel reason"), by: get(row, "Cancelled by") },
+      vitals: get(row, "Repeat vitals times").split(";").map(x => x.trim()).filter(x => /^\d{1,2}:\d{2}(:\d{2})?$/.test(x)).map(x => x.replace(/^(\d):/, "0$1:")) };
     if (!/^\d{4}-\d{2}-\d{2}$/.test(r.date)) { skipped++; return; }
     r.agency = agencyFor(get(row, "Agency"));
     const s = sig(r);
