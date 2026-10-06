@@ -87,6 +87,20 @@ button.danger{color:var(--red)}
 .note{font-size:.8rem;color:var(--mute)}
 @media(max-width:420px){.calc{grid-template-columns:1fr 1fr}}
 #report{display:none}
+#reportBar{display:none}
+@media screen{
+  body.viewing{background:#fff}
+  body.viewing>*:not(#report):not(#reportBar){display:none!important}
+  body.viewing #reportBar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;position:sticky;top:0;z-index:5;padding:8px;background:#fff;border-bottom:1px solid #ccc}
+  body.viewing #reportBar button{flex:1;min-width:120px;width:auto}
+  body.viewing #reportBar .note{flex-basis:100%;margin:0;color:#555}
+  body.viewing #report{display:block;background:#fff;color:#000;padding:10px;overflow-x:auto;font:12px/1.3 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  body.viewing #report h1{font-size:18px;margin:0 0 2px;color:#000}
+  body.viewing #report p{margin:0 0 8px;color:#333}
+  body.viewing #report table{border-collapse:collapse;min-width:900px;width:100%;font-size:11px}
+  body.viewing #report th,body.viewing #report td{border:1px solid #999;padding:3px 4px;text-align:left;vertical-align:top;color:#000}
+  body.viewing #report th{background:#eee}
+}
 @media print{
   @page{size:landscape;margin:10mm}
   body{background:#fff!important;color:#000!important;font:11px/1.3 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
@@ -187,12 +201,13 @@ button.danger{color:var(--red)}
 <div id="list"></div>
 <div class="actions"><button id="csv">Export CSV</button><button id="csvAll" hidden>Export all agencies</button><button id="imp">Import CSV</button><button id="print">Print report</button><button id="wipe" class="danger">Delete all runs</button></div>
 <input type="file" id="impFile" accept=".csv,text/csv" style="display:none">
-<p class="note">Data lives in this browser only. Export a CSV regularly. Clearing browser data erases it.</p>
+<p class="note" id="storageNote">Data lives in this browser only. Export a CSV regularly. Clearing browser data erases it.</p>
 </section>
 </main>
 
 <div class="toast" id="undoBar" role="status" aria-live="polite" hidden><span>Run deleted.</span><button type="button" id="undoBtn">Undo</button></div>
 
+<div id="reportBar"><button type="button" class="primary" id="rPrint">Print</button><button type="button" id="rClose">Close report</button><p class="note">If Print does nothing here, use your browser menu to print or share this page.</p></div>
 <div id="report"></div>
 
 <script>
@@ -211,6 +226,36 @@ const hasOdo = k => k !== "enr" && k !== "pt";
 const $ = id => document.getElementById(id);
 let editingId = null;
 let agencies = [], curId = "";
+
+// ---- storage: localStorage plus an IndexedDB copy, so data survives if either one is cleared ----
+let mirrorOn = false, idb = null;
+const idbOpen = () => new Promise(res => {
+  try { const q = indexedDB.open("transportLog", 1); q.onupgradeneeded = () => q.result.createObjectStore("kv"); q.onsuccess = () => res(q.result); q.onerror = q.onblocked = () => res(null); }
+  catch { res(null); }
+});
+function mirror(k, v) {
+  if (!mirrorOn || !idb) return;
+  try { const st = idb.transaction("kv", "readwrite").objectStore("kv"); if (v == null) st.delete(k); else st.put(v, k); } catch {}
+}
+function put(k, v) { try { localStorage.setItem(k, v); } finally { mirror(k, v); } }
+function del(k) { try { localStorage.removeItem(k); } finally { mirror(k, null); } }
+async function recoverFromMirror() {
+  idb = await idbOpen();
+  if (!idb) return false;
+  const all = await new Promise(res => {
+    const out = {};
+    try { const q = idb.transaction("kv").objectStore("kv").openCursor(); q.onsuccess = e => { const c = e.target.result; if (c) { out[c.key] = c.value; c.continue(); } else res(out); }; q.onerror = () => res(out); }
+    catch { res(out); }
+  });
+  let restored = false;
+  for (const [k, v] of Object.entries(all)) {
+    let have = null; try { have = localStorage.getItem(k); } catch {}
+    if (have === null) { try { localStorage.setItem(k, v); if (k === KEY || k === AGKEY) restored = true; } catch {} }
+  }
+  mirrorOn = true;
+  for (const k of [KEY, AGKEY, CKEY, DKEY, LKEY, SKEY]) { try { const v = localStorage.getItem(k); if (v !== null) mirror(k, v); } catch {} }
+  return restored;
+}
 
 // Build time + odometer rows
 $("stops").innerHTML = STOPS.map(([k, name]) => `
@@ -305,7 +350,7 @@ function filtered() {
 const avg = a => { a = a.filter(x => x != null); return a.length ? a.reduce((x, y) => x + y, 0) / a.length : null; };
 const sortedRuns = () => load().sort((a, b) => (b.date || "").localeCompare(a.date || "") || b.id - a.id);
 const loadAll = () => { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; } };
-const storeAll = a => { try { localStorage.setItem(KEY, JSON.stringify(a)); } catch { alert("Could not save. Browser storage may be disabled."); } };
+const storeAll = a => { try { put(KEY, JSON.stringify(a)); } catch { alert("Could not save. Browser storage may be disabled."); } };
 // load/store only touch the runs of the selected agency; other agencies' runs are left alone
 const load = () => loadAll().filter(r => r.agency === curId);
 const store = a => storeAll([...loadAll().filter(r => r.agency !== curId), ...a.map(r => ({ ...r, agency: curId }))]);
@@ -401,9 +446,9 @@ const hasContent = () => editingId != null || $("from").value || $("to").value |
 
 function saveDraft() {
   try {
-    if (!hasContent()) { localStorage.removeItem(DKEY); return; }
+    if (!hasContent()) { del(DKEY); return; }
     const r = readForm(); r.editingId = editingId; r.agency = curId; delete r.id;
-    localStorage.setItem(DKEY, JSON.stringify(r));
+    put(DKEY, JSON.stringify(r));
   } catch {}
 }
 
@@ -443,7 +488,7 @@ const newId = () => "a" + Date.now().toString(36) + Math.random().toString(36).s
 const curAgency = () => agencies.find(a => a.id === curId);
 const agencyName = id => (agencies.find(a => a.id === id) || {}).name || "";
 function saveAgencies() {
-  try { localStorage.setItem(AGKEY, JSON.stringify(agencies)); localStorage.setItem(CKEY, curId); }
+  try { put(AGKEY, JSON.stringify(agencies)); put(CKEY, curId); }
   catch { alert("Could not save. Browser storage may be disabled."); }
 }
 function renderAgency(editing) {
@@ -617,7 +662,7 @@ function backupCheck() {
   }
 }
 $("backupNow").onclick = () => exportCsv(true);
-$("backupLater").onclick = () => { try { localStorage.setItem(SKEY, String(Date.now() + 864e5)); } catch {} backupCheck(); };
+$("backupLater").onclick = () => { try { put(SKEY, String(Date.now() + 864e5)); } catch {} backupCheck(); };
 
 function buildReport() {
   const runs = filtered().sort((a, b) => (a.date || "").localeCompare(b.date || "") || a.id - b.id);
@@ -642,9 +687,12 @@ function buildReport() {
 }
 $("print").onclick = () => {
   if (!filtered().length) { alert("No runs to print. Check your search and dates."); return; }
-  buildReport();
-  window.print();
+  try { buildReport(); } catch (e) { alert("Could not build the report: " + e.message); return; }
+  document.body.classList.add("viewing"); window.scrollTo(0, 0);
+  try { window.print(); } catch {}
 };
+$("rPrint").onclick = () => { try { window.print(); } catch { alert("Printing is blocked here. Use your browser menu to print or share this page."); } };
+$("rClose").onclick = () => document.body.classList.remove("viewing");
 
 function startEdit(id) {
   const r = load().find(r => r.id == id);
@@ -714,7 +762,7 @@ function exportCsv(all) {
   a.download = (slug ? slug + "-" : "") + "transport-log-" + new Date().toLocaleDateString("en-CA") + ".csv";
   a.click();
   URL.revokeObjectURL(a.href);
-  try { localStorage.setItem(LKEY, String(Date.now())); } catch {}
+  try { put(LKEY, String(Date.now())); } catch {}
   backupCheck();
 }
 $("csv").onclick = () => exportCsv(false);
@@ -790,10 +838,13 @@ $("impFile").onchange = async e => {
 $("c_now").onclick = () => { $("c_time").value = nowHMS(); update(); };
 $("c_stage").addEventListener("change", () => { if ($("c_stage").value && !$("outcome").value) $("outcome").value = "Cancelled"; });
 
+function init() {
 (function migrate() {
   try { agencies = JSON.parse(localStorage.getItem(AGKEY)) || []; } catch { agencies = []; }
   if (!Array.isArray(agencies)) agencies = [];
   const runs = loadAll();
+  [...new Set(runs.map(r => r.agency).filter(id => id && !agencies.some(a => a.id === id)))]
+    .forEach((id, i) => agencies.push({ id, name: "Recovered agency " + (i + 1) }));
   let legacy = ""; try { legacy = localStorage.getItem(AKEY) || ""; } catch {}
   if (!agencies.length && (legacy || runs.length)) agencies = [{ id: newId(), name: legacy || "My agency" }];
   if (agencies.length && runs.some(r => !r.agency)) storeAll(runs.map(r => r.agency ? r : { ...r, agency: agencies[0].id }));
@@ -804,6 +855,29 @@ $("c_stage").addEventListener("change", () => { if ($("c_stage").value && !$("ou
 if (!restoreDraft()) clearForm();
 renderAgency(false);
 render();
+}
+
+// Start only after the backup copy has been checked, so an empty page never overwrites it.
+let initDone = false, recovered = false;
+const notifyRecovered = () => alert("Your saved runs were restored from this browser's backup copy.");
+const rec = recoverFromMirror().catch(() => false);
+rec.then(ok => { if (!ok) return; recovered = true; if (initDone) { init(); notifyRecovered(); } });
+Promise.race([rec, new Promise(r => setTimeout(() => r(false), 2000))]).then(() => {
+  init(); initDone = true;
+  if (recovered) notifyRecovered();
+});
+
+// Ask the browser not to clear this site's data, and say what it answered.
+(async () => {
+  const el = $("storageNote"), base = el.textContent;
+  let p = false;
+  try {
+    if (navigator.storage && navigator.storage.persisted) p = await navigator.storage.persisted();
+    if (!p && navigator.storage && navigator.storage.persist) p = await navigator.storage.persist();
+  } catch {}
+  el.textContent = base + (p ? " This browser has agreed not to clear it automatically." : " This browser has not promised to keep it, so export a CSV after each shift.")
+    + (location.protocol === "file:" ? " Opened as a local file: some browsers drop data for local files, so open it from a web address if runs disappear." : "");
+})();
 if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register("sw.js").catch(() => {});
 </script>
 </body>
