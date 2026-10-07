@@ -72,7 +72,11 @@ button.danger{color:var(--red)}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .chips:empty{margin:0}
 .chip{min-height:32px;padding:4px 12px;border-radius:16px;font-size:.85rem;font-weight:500;border-color:var(--blue);color:var(--blue)}
-.crewgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
+.crewgrid{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}
+.crewrow{display:flex;align-items:center;gap:10px}
+.crewrow input.crewbox{flex:1;min-width:0}
+.crewrow label.role{display:flex;align-items:center;gap:4px;margin:0;font-size:.85rem;color:var(--ink);white-space:nowrap;min-height:48px;cursor:pointer}
+.crewrow label.role input{width:22px;height:22px;min-height:0;padding:0;margin:0;accent-color:var(--blue)}
 .warn{margin-top:12px;border:1px solid var(--red);color:var(--red);border-radius:8px;padding:8px 12px;font-size:.88rem}
 .warn[hidden]{display:none}
 .banner{background:var(--bg);border:1px solid var(--blue);color:var(--blue);border-radius:8px;padding:8px 12px;margin:0 0 12px;font-weight:600;font-size:.9rem}
@@ -138,6 +142,12 @@ button.danger{color:var(--red)}
 <div class="banner" id="backupBanner" hidden><span id="backupText"></span>
 <div class="actions" style="margin-top:8px"><button type="button" id="backupNow" style="min-height:40px">Export now</button><button type="button" id="backupLater" style="min-height:40px">Remind me tomorrow</button></div></div>
 
+<details class="bdwrap" id="abBox"><summary>Automatic backup file</summary>
+<p class="note" id="abStatus"></p>
+<div class="actions" style="margin-top:6px"><button type="button" id="abChoose" style="min-height:40px" hidden>Choose backup file</button><button type="button" id="abResume" style="min-height:40px" hidden>Allow backups again</button><button type="button" id="abNow" style="min-height:40px">Back up now</button></div>
+<label id="abDlWrap" style="display:flex;align-items:center;gap:8px;margin-top:10px;color:var(--ink)"><input type="checkbox" id="abDl" style="width:22px;height:22px;min-height:0;margin:0;accent-color:var(--blue)"> Download a backup file after saving runs (at most once an hour)</label>
+</details>
+
 <section>
 <h2 id="formTitle">New run</h2>
 <p class="banner" id="editBanner" hidden></p>
@@ -177,6 +187,7 @@ button.danger{color:var(--red)}
 </div>
 
 <div class="warn" id="warn" hidden></div>
+<p class="note" id="autosaveNote" role="status" aria-live="polite" style="margin:8px 0 0"></p>
 <div class="calc" id="calc"></div>
 
 <div class="full" style="margin-top:12px"><label for="notes">Notes (no patient names or identifiers)</label><textarea id="notes" rows="2"></textarea></div>
@@ -336,7 +347,7 @@ function readForm() {
   STOPS.forEach(([k]) => { t[k] = $("t_" + k).value; o[k] = hasOdo(k) ? $("o_" + k).value : ""; });
   return {
     id: editingId ?? Date.now(), date: $("date").value, run: $("run").value.trim(), type: $("type").value,
-    unit: $("unit").value.trim(), crew: getCrew(), priority: $("priority").value, outcome: $("outcome").value, from: $("from").value.trim(), to: $("to").value.trim(),
+    unit: $("unit").value.trim(), crew: getCrew(), lead: getLead(), driver: getDriver(), priority: $("priority").value, outcome: $("outcome").value, from: $("from").value.trim(), to: $("to").value.trim(),
     notes: $("notes").value.trim(), t, o, cancel: readCancel(), vitals: [...document.querySelectorAll("#vitalsList .vt")].map(i => i.value).filter(Boolean)
   };
 }
@@ -382,7 +393,7 @@ function filtered() {
 const avg = a => { a = a.filter(x => x != null); return a.length ? a.reduce((x, y) => x + y, 0) / a.length : null; };
 const sortedRuns = () => load().sort((a, b) => (b.date || "").localeCompare(a.date || "") || b.id - a.id);
 const loadAll = () => { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; } };
-const storeAll = a => { try { put(KEY, JSON.stringify(a)); } catch { alert("Could not save. Browser storage may be disabled."); } };
+const storeAll = a => { try { put(KEY, JSON.stringify(a)); autoBackup(); } catch { alert("Could not save. Browser storage may be disabled."); } };
 // load/store only touch the runs of the selected agency; other agencies' runs are left alone
 const load = () => loadAll().filter(r => r.agency === curId);
 const store = a => storeAll([...loadAll().filter(r => r.agency !== curId), ...a.map(r => ({ ...r, agency: curId }))]);
@@ -406,7 +417,7 @@ function render() {
       <p>${esc(r.from) || "?"} to ${esc(r.to) || "?"}${r.unit ? " in unit " + esc(r.unit) : ""}</p>
       ${[r.priority, r.outcome].some(Boolean) ? `<p>${[r.priority, r.outcome].filter(Boolean).map(esc).join(" · ")}</p>` : ""}
       ${cancelParts(r).length ? `<p style="color:var(--red);font-weight:600">${cancelParts(r).map(esc).join(" · ")}</p>` : ""}
-      ${crewList(r.crew).length ? `<p>Crew: ${crewList(r.crew).map(esc).join(", ")}</p>` : ""}
+      ${crewList(r.crew).length ? `<p>Crew: ${crewLabel(r).map(esc).join(", ")}</p>` : ""}
       <p class="nums">Response ${fmtDur(f.response)}, scene ${fmtDur(f.onScene)}, transport ${fmtDur(f.transport)}, total ${fmtDur(f.total)}</p>
       <p class="nums">Loaded ${fmtMi(f.loadedMi)}, total ${fmtMi(f.totalMi)}</p>
       ${log}
@@ -444,7 +455,7 @@ function prefill() {
   const m = /^(.*?)(\d+)$/.exec(last.run || "");
   if (m) { $("run").value = m[1] + (BigInt(m[2]) + 1n).toString().padStart(m[2].length, "0"); used = true; }
   if (last.unit) { $("unit").value = last.unit; used = true; }
-  if (crewList(last.crew).length) { setCrew(last.crew); used = true; }
+  if (crewList(last.crew).length) { setCrew(last.crew, last.lead, last.driver); used = true; }
   $("prefillNote").textContent = "Run number, unit, crew and starting odometer are filled from your last run. Change them if needed.";
   $("prefillNote").hidden = !used;
 }
@@ -463,28 +474,55 @@ const crewList = v => (Array.isArray(v) ? v : String(v || "").split(/[;,]/)).map
 const getCrew = () => [...document.querySelectorAll(".crewbox")].map(i => i.value.trim()).filter(Boolean);
 function addCrewBox(v) {
   const n = document.querySelectorAll(".crewbox").length + 1;
+  const row = document.createElement("div"); row.className = "crewrow";
   const i = document.createElement("input");
   i.className = "crewbox"; i.placeholder = "Crew member " + n; i.setAttribute("aria-label", "Crew member " + n);
   i.value = v || "";
-  $("crewBoxes").appendChild(i);
+  row.appendChild(i);
+  [["lead", "Lead"], ["drv", "Driver"]].forEach(([k, txt]) => {
+    const l = document.createElement("label"); l.className = "role";
+    const c = document.createElement("input"); c.type = "checkbox"; c.className = "crew" + k;
+    c.setAttribute("aria-label", txt + ": crew member " + n);
+    l.appendChild(c); l.appendChild(document.createTextNode(txt)); row.appendChild(l);
+  });
+  $("crewBoxes").appendChild(row);
   return i;
 }
-function setCrew(list) {
+const roleName = cls => { const c = [...document.querySelectorAll("." + cls)].find(c => c.checked && c.closest(".crewrow").querySelector(".crewbox").value.trim()); return c ? c.closest(".crewrow").querySelector(".crewbox").value.trim() : ""; };
+const getLead = () => roleName("crewlead"), getDriver = () => roleName("crewdrv");
+function setCrew(list, lead, driver) {
   list = crewList(list);
   $("crewBoxes").innerHTML = "";
   for (let i = 0; i < Math.max(2, list.length); i++) addCrewBox(list[i]);
+  const rows = [...document.querySelectorAll(".crewrow")];
+  const mark = (name, cls) => { name = String(name || "").trim().toLowerCase(); if (!name) return; const r = rows.find(r => r.querySelector(".crewbox").value.trim().toLowerCase() === name); if (r) r.querySelector("." + cls).checked = true; };
+  mark(lead, "crewlead"); mark(driver, "crewdrv");
 }
+// only one lead and one driver at a time
+$("crewBoxes").addEventListener("change", e => {
+  const c = e.target; if (!c.matches || !c.matches(".crewlead,.crewdrv") || !c.checked) return;
+  document.querySelectorAll("." + (c.classList.contains("crewlead") ? "crewlead" : "crewdrv")).forEach(o => { if (o !== c) o.checked = false; });
+});
+const sameName = (a, b) => !!a && !!b && String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+const crewLabel = r => crewList(r.crew).map(n => n + [sameName(n, r.lead) ? "Lead" : "", sameName(n, r.driver) ? "Driver" : ""].filter(Boolean).map((x, i, a) => (i ? ", " : " (") + x + (i === a.length - 1 ? ")" : "")).join(""));
 const DKEY = "transportLog.draft";
 const hasContent = () => editingId != null || $("from").value || $("to").value || $("notes").value || $("c_stage").value ||
   STOPS.some(([k]) => $("t_" + k).value || (k !== "disp" && hasOdo(k) && $("o_" + k).value)) || [...document.querySelectorAll("#vitalsList .vt")].some(i => i.value);
 
 function saveDraft() {
+  const note = $("autosaveNote");
   try {
-    if (!hasContent()) { del(DKEY); return; }
+    if (!hasContent()) { del(DKEY); if (note) note.textContent = ""; return; }
     const r = readForm(); r.editingId = editingId; r.agency = curId; delete r.id;
     put(DKEY, JSON.stringify(r));
-  } catch {}
+    if (note) note.textContent = "Autosaved " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  } catch { if (note) note.textContent = "Autosave failed. Export a CSV to be safe."; }
 }
+// Autosave: on every edit (update), every 10 seconds, and whenever the page is hidden, switched away from, or closed.
+setInterval(() => { if (initDone) saveDraft(); }, 10000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden" && initDone) saveDraft(); });
+window.addEventListener("pagehide", () => { if (initDone) saveDraft(); });
+window.addEventListener("blur", () => { if (initDone) saveDraft(); });
 
 function setSel(el, v) {
   v = v || "";
@@ -494,7 +532,7 @@ function setSel(el, v) {
 
 function fillForm(r) {
   $("f").reset();
-  $("date").value = r.date || ""; $("run").value = r.run || ""; $("unit").value = r.unit || ""; setCrew(r.crew);
+  $("date").value = r.date || ""; $("run").value = r.run || ""; $("unit").value = r.unit || ""; setCrew(r.crew, r.lead, r.driver);
   setSel($("type"), r.type || "Emergency"); setSel($("priority"), r.priority); setSel($("outcome"), r.outcome);
   $("from").value = r.from || ""; $("to").value = r.to || ""; $("notes").value = r.notes || "";
   const c = r.cancel || {};
@@ -615,22 +653,25 @@ $("undoBtn").onclick = () => {
 let bdMode = "unit";
 function renderBreakdown() {
   const m = new Map();
-  const add = (name, f) => {
-    const e = m.get(name) || { n: 0, loaded: 0, total: 0 };
-    e.n++; e.loaded += f.loadedMi || 0; e.total += f.totalMi || 0; m.set(name, e);
+  const add = (name, f, role) => {
+    const e = m.get(name) || { n: 0, loaded: 0, total: 0, lead: 0, drv: 0 };
+    e.n++; e.loaded += f.loadedMi || 0; e.total += f.totalMi || 0;
+    if (role && role.lead) e.lead++;
+    if (role && role.drv) e.drv++;
+    m.set(name, e);
   };
   filtered().forEach(r => {
     const f = figures(r);
     if (bdMode === "unit") add((r.unit || "").trim() || "(no unit)", f);
-    else { const c = crewList(r.crew); if (c.length) c.forEach(n => add(n, f)); else add("(no crew)", f); }
+    else { const c = crewList(r.crew); if (c.length) c.forEach(n => add(n, f, { lead: sameName(n, r.lead), drv: sameName(n, r.driver) })); else add("(no crew)", f); }
   });
   const rows = [...m].sort((a, b) => b[1].total - a[1].total || a[0].localeCompare(b[0]));
   $("bdUnit").classList.toggle("on", bdMode === "unit");
   $("bdCrew").classList.toggle("on", bdMode === "crew");
   $("bdTable").innerHTML = rows.length
-    ? `<table class="bd"><thead><tr><th>${bdMode === "unit" ? "Unit" : "Crew"}</th><th>Runs</th><th>Loaded mi</th><th>Total mi</th></tr></thead><tbody>` +
-      rows.map(([n, e]) => `<tr><td>${esc(n)}</td><td>${e.n}</td><td>${e.loaded.toFixed(1)}</td><td>${e.total.toFixed(1)}</td></tr>`).join("") +
-      `</tbody></table>` + (bdMode === "crew" ? `<p class="note">A run counts for every crew member on it, so these add up to more than the overall total.</p>` : "")
+    ? `<table class="bd"><thead><tr><th>${bdMode === "unit" ? "Unit" : "Crew"}</th><th>Runs</th>${bdMode === "crew" ? "<th>Lead</th><th>Driver</th>" : ""}<th>Loaded mi</th><th>Total mi</th></tr></thead><tbody>` +
+      rows.map(([n, e]) => `<tr><td>${esc(n)}</td><td>${e.n}</td>${bdMode === "crew" ? `<td>${e.lead}</td><td>${e.drv}</td>` : ""}<td>${e.loaded.toFixed(1)}</td><td>${e.total.toFixed(1)}</td></tr>`).join("") +
+      `</tbody></table>` + (bdMode === "crew" ? `<p class="note">A run counts for every crew member on it, so these add up to more than the overall total. Lead and Driver show how many of those runs each person was marked as lead or driver.</p>` : "")
     : `<p class="empty">No runs to total.</p>`;
 }
 $("bdUnit").onclick = () => { bdMode = "unit"; renderBreakdown(); };
@@ -673,7 +714,7 @@ function duplicateRun(id) {
   if (hasContent() && !confirm("Discard what you are entering and start a copy of this run instead?")) return;
   clearForm();
   setSel($("type"), r.type); setSel($("priority"), r.priority);
-  $("unit").value = r.unit || ""; setCrew(r.crew);
+  $("unit").value = r.unit || ""; setCrew(r.crew, r.lead, r.driver);
   $("from").value = r.from || ""; $("to").value = r.to || "";
   $("prefillNote").textContent = "Copied from run " + (r.run || "–") + " (" + (r.date || "") + "). Enter the new times and odometer readings.";
   $("prefillNote").hidden = false;
@@ -713,7 +754,7 @@ function buildReport() {
     if ((r.vitals || []).length) parts.push(esc("Repeat vitals " + r.vitals.join(", ")));
     const sub = parts.length ? `<tr class="sub"><td colspan="13">` + parts.join("&nbsp;&nbsp;|&nbsp;&nbsp;") + `</td></tr>` : "";
     return `<tbody><tr><td>${esc(r.date)}</td><td>${esc(r.run)}</td><td>${esc(r.type)}${r.priority ? "<br>" + esc(r.priority) : ""}</td><td>${esc(r.unit)}</td>` +
-      `<td>${crewList(r.crew).map(esc).join(", ")}</td><td>${esc(r.from) || "?"} to ${esc(r.to) || "?"}</td><td>${esc(r.outcome)}${cancelParts(r).length ? "<br>" + cancelParts(r).map(esc).join("<br>") : ""}</td>` +
+      `<td>${crewLabel(r).map(esc).join(", ")}</td><td>${esc(r.from) || "?"} to ${esc(r.to) || "?"}</td><td>${esc(r.outcome)}${cancelParts(r).length ? "<br>" + cancelParts(r).map(esc).join("<br>") : ""}</td>` +
       `<td>${fmtDur(f.response)}</td><td>${fmtDur(f.onScene)}</td><td>${fmtDur(f.transport)}</td><td>${fmtDur(f.total)}</td><td>${fmtMi(f.loadedMi)}</td><td>${fmtMi(f.totalMi)}</td></tr>${sub}</tbody>`;
   }).join("");
   $("report").innerHTML = `<h1>${curAgency() ? esc(curAgency().name) + ": " : ""}Transport report</h1>
@@ -756,7 +797,7 @@ $("save").onclick = () => {
   clearForm(); render();
 };
 $("addCrew").onclick = () => { if (document.querySelectorAll(".crewbox").length < 8) addCrewBox().focus(); update(); };
-$("delCrew").onclick = () => { const b = document.querySelectorAll(".crewbox"); if (b.length > 2) { b[b.length - 1].remove(); update(); } };
+$("delCrew").onclick = () => { const b = document.querySelectorAll(".crewbox"); if (b.length > 2) { b[b.length - 1].closest(".crewrow").remove(); update(); } };
 $("clear").onclick = () => {
   if (hasContent() && !confirm(editingId != null ? "Discard your changes to this run?" : "Clear everything you entered?")) return;
   clearForm();
@@ -778,21 +819,24 @@ $("wipe").onclick = () => {
   if (load().length && confirm("Delete every saved run for " + agencyName(curId) + "? Other agencies are not affected. This cannot be undone.")) { store([]); deleted = []; $("undoBar").hidden = true; render(); }
 };
 
-function exportCsv(all) {
-  const runs = all ? loadAll() : load();
-  if (!runs.length) { alert("No runs to export."); return; }
-  const head = ["Agency", "Date", "Run", "Type", "Unit", "Crew", "Priority", "Outcome", "Pickup", "Destination", "Cancellation", "Cancel time", "Cancel reason", "Cancelled by", "Repeat vitals times"];
+function buildCsv(runs) {
+  const head = ["Agency", "Date", "Run", "Type", "Unit", "Crew", "Lead", "Driver", "Priority", "Outcome", "Pickup", "Destination", "Cancellation", "Cancel time", "Cancel reason", "Cancelled by", "Repeat vitals times"];
   STOPS.forEach(([k, n]) => head.push(...(hasOdo(k) ? [n + " time", n + " odometer"] : [n + " time"])));
   head.push("Response min", "On scene min", "Transport min", "Total min", "Response mi", "Loaded mi", "Total mi", "Notes");
   const q = v => '"' + String(v ?? "").replace(/"/g, '""') + '"';
   const rows = runs.map(r => {
     const f = figures(r);
-    const row = [agencyName(r.agency), r.date, r.run, r.type, r.unit, crewList(r.crew).join("; "), r.priority, r.outcome, r.from, r.to, r.cancel?.stage, r.cancel?.time, r.cancel?.reason, r.cancel?.by, (r.vitals || []).join("; ")];
+    const row = [agencyName(r.agency), r.date, r.run, r.type, r.unit, crewList(r.crew).join("; "), r.lead || "", r.driver || "", r.priority, r.outcome, r.from, r.to, r.cancel?.stage, r.cancel?.time, r.cancel?.reason, r.cancel?.by, (r.vitals || []).join("; ")];
     STOPS.forEach(([k]) => row.push(...(hasOdo(k) ? [r.t[k], r.o[k]] : [r.t[k]])));
     row.push(...[f.response, f.onScene, f.transport, f.total].map(x => x == null ? "" : (x / 60).toFixed(2)), f.responseMi?.toFixed(1), f.loadedMi?.toFixed(1), f.totalMi?.toFixed(1), r.notes);
     return row.map(q).join(",");
   });
-  const blob = new Blob([[head.map(q).join(","), ...rows].join("\n")], { type: "text/csv" });
+  return [head.map(q).join(","), ...rows].join("\n");
+}
+function exportCsv(all) {
+  const runs = all ? loadAll() : load();
+  if (!runs.length) { alert("No runs to export."); return; }
+  const blob = new Blob([buildCsv(runs)], { type: "text/csv" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   const slug = (all ? "all-agencies" : agencyName(curId)).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -804,6 +848,118 @@ function exportCsv(all) {
 }
 $("csv").onclick = () => exportCsv(false);
 $("csvAll").onclick = () => exportCsv(true);
+
+// ---- automatic backup file: keeps a CSV of every run up to date without you doing anything ----
+// Browsers that allow it (Chrome/Edge on a computer or recent Android) rewrite one chosen file on every change.
+// Others (iPhone Safari, Firefox) download a fresh backup file after you save runs, at most once an hour.
+// A backup is never written when there are no runs, so an empty log cannot overwrite a good backup.
+const ABKEY = "transportLog.autoDownload", ABLAST = "transportLog.lastAutoDownload";
+const fsOK = typeof window.showSaveFilePicker === "function";
+let bkHandle = null, bkTimer = null, bkNeedsPermission = false, bkMsg = "";
+const bkDb = () => new Promise(res => {
+  try { const q = indexedDB.open("transportLogBackup", 1); q.onupgradeneeded = () => q.result.createObjectStore("h"); q.onsuccess = () => res(q.result); q.onerror = q.onblocked = () => res(null); }
+  catch { res(null); }
+});
+async function bkStoreHandle(h) {
+  const db = await bkDb(); if (!db) return;
+  try { const st = db.transaction("h", "readwrite").objectStore("h"); if (h) st.put(h, "file"); else st.delete("file"); } catch {}
+}
+async function bkLoadHandle() {
+  const db = await bkDb(); if (!db) return null;
+  return new Promise(res => { try { const q = db.transaction("h").objectStore("h").get("file"); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); } catch { res(null); } });
+}
+const bkAutoDownloadOn = () => { try { return localStorage.getItem(ABKEY) !== "0"; } catch { return true; } };
+const bkStamp = () => new Date().toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+
+function renderBackupUi() {
+  $("abChoose").hidden = !fsOK;
+  $("abChoose").textContent = bkHandle ? "Change backup file" : "Choose backup file";
+  $("abResume").hidden = !(bkHandle && bkNeedsPermission);
+  $("abDlWrap").hidden = !!bkHandle;
+  $("abDl").checked = bkAutoDownloadOn();
+  let t;
+  if (bkHandle) {
+    const n = bkHandle.name || "backup file";
+    t = bkNeedsPermission ? "The backup file \"" + n + "\" is set up, but the browser needs your OK again before it can update it. Tap Allow backups again."
+      : bkMsg || "Automatic backup to \"" + n + "\" is on. It updates every time you save, edit or delete a run.";
+  } else if (fsOK) {
+    t = bkMsg || "Choose a backup file once and it is kept up to date automatically from then on." + (bkAutoDownloadOn() ? " Until then, a backup file is downloaded after you save runs." : "");
+  } else {
+    t = bkMsg || "This browser cannot keep one file updated by itself, so a fresh backup file is downloaded after you save runs instead (at most once an hour).";
+  }
+  $("abStatus").textContent = t;
+  if (bkNeedsPermission) $("abBox").open = true;
+}
+
+async function writeBackupFile() {
+  if (!bkHandle) return false;
+  const runs = loadAll();
+  if (!runs.length) return false;
+  try {
+    if (bkHandle.queryPermission && await bkHandle.queryPermission({ mode: "readwrite" }) !== "granted") { bkNeedsPermission = true; renderBackupUi(); return false; }
+    const w = await bkHandle.createWritable();
+    await w.write(new Blob([buildCsv(runs)], { type: "text/csv" }));
+    await w.close();
+    bkNeedsPermission = false;
+    bkMsg = "Automatic backup to \"" + (bkHandle.name || "backup file") + "\" is on. Last updated " + bkStamp() + " (" + runs.length + " run" + (runs.length === 1 ? "" : "s") + ").";
+    try { put(LKEY, String(Date.now())); } catch {}
+    backupCheck(); renderBackupUi();
+    return true;
+  } catch {
+    bkMsg = "Could not update the backup file. Choose it again, or export a CSV.";
+    renderBackupUi();
+    return false;
+  }
+}
+
+function downloadBackup(force) {
+  let last = 0; try { last = +localStorage.getItem(ABLAST) || 0; } catch {}
+  if (!force && Date.now() - last < 36e5) return false;
+  const runs = loadAll(); if (!runs.length) return false;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([buildCsv(runs)], { type: "text/csv" }));
+  a.download = "transport-log-autobackup-" + new Date().toLocaleDateString("en-CA") + ".csv";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  try { put(ABLAST, String(Date.now())); put(LKEY, String(Date.now())); } catch {}
+  bkMsg = "Last backup file downloaded " + bkStamp() + " (" + runs.length + " run" + (runs.length === 1 ? "" : "s") + ").";
+  backupCheck(); renderBackupUi();
+  return true;
+}
+
+function autoBackup() {
+  try {
+    if (!initDone) return;
+    if (bkHandle) { clearTimeout(bkTimer); bkTimer = setTimeout(writeBackupFile, 1500); }
+    else if (bkAutoDownloadOn()) downloadBackup(false);
+  } catch {}
+}
+
+$("abChoose").onclick = async () => {
+  try {
+    const h = await window.showSaveFilePicker({ suggestedName: "transport-log-backup.csv", types: [{ description: "CSV file", accept: { "text/csv": [".csv"] } }] });
+    bkHandle = h; bkNeedsPermission = false; bkMsg = "";
+    await bkStoreHandle(h);
+    if (loadAll().length) await writeBackupFile(); else bkMsg = "Backup file chosen. It is written as soon as you save a run.";
+  } catch {}
+  renderBackupUi();
+};
+$("abResume").onclick = async () => {
+  try { if (bkHandle && await bkHandle.requestPermission({ mode: "readwrite" }) === "granted") { bkNeedsPermission = false; await writeBackupFile(); } } catch {}
+  renderBackupUi();
+};
+$("abNow").onclick = async () => {
+  if (!loadAll().length) { alert("There are no saved runs to back up yet."); return; }
+  if (bkHandle) { if (bkNeedsPermission) await $("abResume").onclick(); else await writeBackupFile(); } else downloadBackup(true);
+};
+$("abDl").onchange = e => { try { put(ABKEY, e.target.checked ? "1" : "0"); } catch {} renderBackupUi(); };
+(async () => {
+  try {
+    bkHandle = await bkLoadHandle();
+    if (bkHandle && bkHandle.queryPermission) bkNeedsPermission = await bkHandle.queryPermission({ mode: "readwrite" }) !== "granted";
+  } catch { bkHandle = null; }
+  renderBackupUi();
+})();
 
 function tick() {
   const d = new Date();
@@ -857,7 +1013,7 @@ $("impFile").onchange = async e => {
       o[k] = ov !== "" && isFinite(Number(ov)) ? ov : "";
     });
     const r = { id: Date.now() + i, date: get(row, "Date"), run: get(row, "Run"), type: get(row, "Type") || "Emergency",
-      unit: get(row, "Unit"), crew: crewList(get(row, "Crew")), priority: get(row, "Priority"), outcome: get(row, "Outcome"), from: get(row, "Pickup"), to: get(row, "Destination"), notes: get(row, "Notes"), t, o,
+      unit: get(row, "Unit"), crew: crewList(get(row, "Crew")), lead: get(row, "Lead"), driver: get(row, "Driver"), priority: get(row, "Priority"), outcome: get(row, "Outcome"), from: get(row, "Pickup"), to: get(row, "Destination"), notes: get(row, "Notes"), t, o,
       cancel: { stage: get(row, "Cancellation"), time: (v => /^\d{1,2}:\d{2}(:\d{2})?$/.test(v) ? v.replace(/^(\d):/, "0$1:") : "")(get(row, "Cancel time")), reason: get(row, "Cancel reason"), by: get(row, "Cancelled by") },
       vitals: get(row, "Repeat vitals times").split(";").map(x => x.trim()).filter(x => /^\d{1,2}:\d{2}(:\d{2})?$/.test(x)).map(x => x.replace(/^(\d):/, "0$1:")) };
     if (!/^\d{4}-\d{2}-\d{2}$/.test(r.date)) { skipped++; return; }
